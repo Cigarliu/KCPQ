@@ -42,6 +42,7 @@ type Client struct {
 	mu                 sync.RWMutex
 	done               chan struct{}
 	closeOnce          sync.Once         // 确保 Close 只执行一次
+	wg                 sync.WaitGroup    // 跟踪所有 goroutine（修复泄漏）
 	receiveLoopDone    chan struct{}    // receiveLoop 退出时关闭
 	heartbeatDone      chan struct{}    // heartbeat 退出时关闭
 	onConnectionLost   ConnectionLostCallback // 连接断开回调
@@ -135,6 +136,8 @@ func Connect(addr string) (*Client, error) {
 
 // receiveLoop 接收消息循环
 func (c *Client) receiveLoop() {
+	c.wg.Add(1)              // 注册 goroutine
+	defer c.wg.Done()        // 退出时注销
 	defer close(c.receiveLoopDone) // 退出时关闭通道，通知应用层
 
 	for {
@@ -226,6 +229,8 @@ func (c *Client) handleMessage(msg *protocol.Message) {
 
 // heartbeat 心跳
 func (c *Client) heartbeat() {
+	c.wg.Add(1)              // 注册 goroutine
+	defer c.wg.Done()        // 退出时注销
 	defer close(c.heartbeatDone)
 
 	ticker := time.NewTicker(15 * time.Second)
@@ -478,6 +483,9 @@ func (c *Client) Close() error {
 		}
 
 		close(c.done)
+
+		// 等待所有 goroutine 退出（修复泄漏）
+		c.wg.Wait()
 
 		c.mu.Lock()
 		for _, sub := range c.subscriptions {
@@ -759,14 +767,22 @@ func (c *Client) reconnect() {
 
 // doReconnect 执行实际的重连操作
 func (c *Client) doReconnect() error {
-	// 关闭旧连接
+	// 步骤1: 关闭旧连接
 	c.mu.Lock()
 	if c.conn != nil {
 		c.conn.Close()
 	}
 	c.mu.Unlock()
 
-	// 建立新连接
+	// 步骤2: 等待所有旧 goroutine 退出（修复泄漏）
+	c.wg.Wait()
+
+	// 步骤3: 创建新的 done channel
+	c.done = make(chan struct{})
+	c.receiveLoopDone = make(chan struct{})
+	c.heartbeatDone = make(chan struct{})
+
+	// 步骤4: 建立新连接
 	conn, err := kcp.DialWithOptions(c.serverAddr, nil, 10, 3)
 	if err != nil {
 		return fmt.Errorf("failed to dial: %w", err)
@@ -784,12 +800,10 @@ func (c *Client) doReconnect() error {
 	c.conn = conn
 	c.mu.Unlock()
 
-	// 重启接收循环
-	c.receiveLoopDone = make(chan struct{})
+	// 步骤5: 重启接收循环（已经使用 WaitGroup）
 	go c.receiveLoop()
 
-	// 重启心跳
-	c.heartbeatDone = make(chan struct{})
+	// 步骤6: 重启心跳（已经使用 WaitGroup）
 	go c.heartbeat()
 
 	return nil
