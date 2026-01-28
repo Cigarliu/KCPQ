@@ -48,6 +48,12 @@ type Client struct {
 	pendingSubs        map[string]*subscriptionACK // 待确认的订阅
 	pendingSubsMu      sync.RWMutex     // pendingSubs 的锁
 
+	// 自动重连相关
+	serverAddr         string           // 服务器地址
+	autoReconnect      bool             // 是否启用自动重连
+	reconnectInterval  time.Duration    // 重连间隔
+	reconnecting       atomic.Bool      // 是否正在重连
+
 	// 统计字段（使用原子操作）
 	messagesSent       atomic.Int64     // 发送消息总数
 	messagesReceived   atomic.Int64     // 接收消息总数
@@ -58,6 +64,7 @@ type Client struct {
 	subscriptionErrors atomic.Int64     // 订阅错误数
 	totalSubscriptions atomic.Int64     // 总订阅数
 
+	reconnectCount     atomic.Int64     // 重连次数
 	// 延迟统计（需要互斥锁保护）
 	latencyMu          sync.RWMutex     // 延迟统计的锁
 	latencies          []time.Duration  // 滑动窗口（保留最近 1000 个样本）
@@ -106,6 +113,9 @@ func ConnectWithContext(ctx context.Context, addr string) (*Client, error) {
 		pendingSubs:     make(map[string]*subscriptionACK),
 		connectedAt:     time.Now(),
 		latencies:       make([]time.Duration, 0, 1000), // 预分配容量
+		serverAddr:      addr,                         // 保存服务器地址
+		autoReconnect:   false,                       // 默认不启用
+		reconnectInterval: 5 * time.Second,
 	}
 
 	// 启动消息接收循环
@@ -637,11 +647,6 @@ func (c *Client) MonitorConnection() {
 	}
 }
 
-func (c *Client) triggerConnectionLost() {
-	if c.onConnectionLost != nil {
-		go c.onConnectionLost()
-	}
-}
 
 // matchSubject 检查 subject 是否匹配 pattern（支持通配符）
 func matchSubject(pattern, subject string) bool {
@@ -676,4 +681,170 @@ func matchSubject(pattern, subject string) bool {
 	}
 
 	return false
+}
+
+// ============== 自动重连功能 ==============
+
+// EnableAutoReconnect 启用自动重连
+// interval: 重连间隔（默认 5 秒）
+func (c *Client) EnableAutoReconnect(interval time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.autoReconnect = true
+	if interval > 0 {
+		c.reconnectInterval = interval
+	}
+
+	log.Printf("[INFO] Auto-reconnect enabled (interval: %v)", c.reconnectInterval)
+}
+
+// DisableAutoReconnect 禁用自动重连
+func (c *Client) DisableAutoReconnect() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.autoReconnect = false
+	log.Printf("[INFO] Auto-reconnect disabled")
+}
+
+// reconnect 执行重连并恢复订阅
+func (c *Client) reconnect() {
+	if !c.reconnecting.CompareAndSwap(false, true) {
+		return // 已经在重连中
+	}
+
+	go func() {
+		defer c.reconnecting.Store(false)
+
+		for {
+			// 检查是否应该停止重连
+			c.mu.RLock()
+			autoReconnect := c.autoReconnect
+			c.mu.RUnlock()
+
+			if !autoReconnect {
+				return
+			}
+
+			select {
+			case <-c.done:
+				log.Printf("[INFO] Client closed, stop reconnecting")
+				return
+			default:
+			}
+
+			log.Printf("[INFO] Reconnecting to %s in %v...", c.serverAddr, c.reconnectInterval)
+			time.Sleep(c.reconnectInterval)
+
+			// 尝试重连
+			err := c.doReconnect()
+			if err != nil {
+				c.connectionErrors.Add(1)
+				c.reconnectCount.Add(1)
+				log.Printf("[WARN] Reconnect failed: %v, will retry...", err)
+				continue
+			}
+
+			log.Printf("[INFO] Reconnect successful!")
+			c.connectedAt = time.Now()
+
+			// 恢复所有订阅
+			c.restoreSubscriptions()
+
+			return
+		}
+	}()
+}
+
+// doReconnect 执行实际的重连操作
+func (c *Client) doReconnect() error {
+	// 关闭旧连接
+	c.mu.Lock()
+	if c.conn != nil {
+		c.conn.Close()
+	}
+	c.mu.Unlock()
+
+	// 建立新连接
+	conn, err := kcp.DialWithOptions(c.serverAddr, nil, 10, 3)
+	if err != nil {
+		return fmt.Errorf("failed to dial: %w", err)
+	}
+
+	// 配置 KCP 参数
+	conn.SetNoDelay(1, 10, 2, 1)
+	conn.SetWindowSize(1024, 1024)
+	conn.SetReadBuffer(4 * 1024 * 1024)
+	conn.SetWriteBuffer(4 * 1024 * 1024)
+	conn.SetWriteDelay(false)
+	conn.SetStreamMode(false)
+
+	c.mu.Lock()
+	c.conn = conn
+	c.mu.Unlock()
+
+	// 重启接收循环
+	c.receiveLoopDone = make(chan struct{})
+	go c.receiveLoop()
+
+	// 重启心跳
+	c.heartbeatDone = make(chan struct{})
+	go c.heartbeat()
+
+	return nil
+}
+
+// restoreSubscriptions 恢复所有订阅
+func (c *Client) restoreSubscriptions() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	log.Printf("[INFO] Restoring %d subscriptions...", len(c.subscriptions))
+
+	for i, sub := range c.subscriptions {
+		if !sub.active {
+			continue
+		}
+
+		log.Printf("[INFO] Restoring subscription #%d: %s", i, sub.subject)
+
+		// 重新订阅
+		msg := protocol.NewMessageCmd(protocol.CmdSub, sub.subject, nil)
+		encoded := msg.Encode()
+
+		c.mu.Unlock()
+		_, err := c.conn.Write(encoded)
+		c.mu.Lock()
+
+		if err != nil {
+			log.Printf("[ERROR] Failed to restore subscription %s: %v", sub.subject, err)
+			c.subscriptionErrors.Add(1)
+			continue
+		}
+
+		log.Printf("[INFO] Subscription restored: %s", sub.subject)
+	}
+
+	log.Printf("[INFO] All subscriptions restored")
+}
+
+// triggerConnectionLost 触发连接断开处理（修改以支持自动重连）
+func (c *Client) triggerConnectionLost() {
+	log.Printf("[WARN] Connection lost detected")
+
+	// 调用用户自定义的回调（如果有）
+	if c.onConnectionLost != nil {
+		go c.onConnectionLost()
+	}
+
+	// 如果启用了自动重连，触发重连
+	c.mu.RLock()
+	autoReconnect := c.autoReconnect
+	c.mu.RUnlock()
+
+	if autoReconnect {
+		log.Printf("[INFO] Auto-reconnect triggered")
+		go c.reconnect()
+	}
 }
