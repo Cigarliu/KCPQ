@@ -67,7 +67,7 @@ type Client struct {
 	reconnectCount     atomic.Int64     // 重连次数
 	// 延迟统计（需要互斥锁保护）
 	latencyMu          sync.RWMutex     // 延迟统计的锁
-	latencies          []time.Duration  // 滑动窗口（保留最近 1000 个样本）
+	latencyBuffer    *ringBuffer   // 环形缓冲区（避免内存泄漏）
 	lastLatency        time.Duration    // 最后一次延迟
 
 	// 连接时间
@@ -112,7 +112,7 @@ func ConnectWithContext(ctx context.Context, addr string) (*Client, error) {
 		heartbeatDone:   make(chan struct{}),
 		pendingSubs:     make(map[string]*subscriptionACK),
 		connectedAt:     time.Now(),
-		latencies:       make([]time.Duration, 0, 1000), // 预分配容量
+		latencyBuffer:   newRingBuffer(1000), // 环形缓冲区，1000个样本
 		serverAddr:      addr,                         // 保存服务器地址
 		autoReconnect:   false,                       // 默认不启用
 		reconnectInterval: 5 * time.Second,
@@ -571,16 +571,17 @@ func (c *Client) GetStats() ClientStats {
 
 // calculateAvgLatencyLocked 计算平均延迟（调用时必须持有 latencyMu 锁）
 func (c *Client) calculateAvgLatencyLocked() time.Duration {
-	if len(c.latencies) == 0 {
+	latencies := c.latencyBuffer.ToSlice()
+	if len(latencies) == 0 {
 		return 0
 	}
 
 	var sum time.Duration
-	for _, l := range c.latencies {
+	for _, l := range latencies {
 		sum += l
 	}
 
-	return sum / time.Duration(len(c.latencies))
+	return sum / time.Duration(len(latencies))
 }
 
 // recordLatency 记录延迟
@@ -590,11 +591,8 @@ func (c *Client) recordLatency(latency time.Duration) {
 
 	c.lastLatency = latency
 
-	// 滑动窗口：保留最近 1000 个样本
-	c.latencies = append(c.latencies, latency)
-	if len(c.latencies) > 1000 {
-		c.latencies = c.latencies[1:]
-	}
+		// 使用环形缓冲区（避免内存泄漏）
+	c.latencyBuffer.Add(latency)
 }
 
 // ClientStats 客户端统计信息（增强版）
