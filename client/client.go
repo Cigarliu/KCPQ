@@ -377,6 +377,43 @@ func (c *Client) SubscribeWithOptions(subject string, callback MessageHandler, c
 	return c.SubscribeWithOptionsContext(context.Background(), subject, callback, channelCapacity)
 }
 
+// SubscribeChan 订阅主题并返回 channel（推荐使用）
+// 这是一种更符合 Go 惯用法的订阅方式
+// msgChannel: 用于接收消息的 channel（只读）
+// sub: 订阅对象，用于取消订阅
+// error: 错误信息
+func (c *Client) SubscribeChan(subject string, capacity int) (<-chan *Message, *Subscription, error) {
+	return c.SubscribeChanWithContext(context.Background(), subject, capacity)
+}
+
+// SubscribeChanWithContext 带上下文的 Channel 订阅（推荐使用）
+// 支持超时、取消等 context 控制
+func (c *Client) SubscribeChanWithContext(ctx context.Context, subject string, capacity int) (<-chan *Message, *Subscription, error) {
+	if capacity <= 0 {
+		capacity = 100
+	}
+
+	msgChan := make(chan *Message, capacity)
+
+	sub, err := c.SubscribeWithOptionsContext(ctx, subject, func(msg *Message) {
+		// 非阻塞发送，防止 channel 满时阻塞
+		select {
+		case msgChan <- msg:
+			// 成功发送到 channel
+		default:
+			// channel 满了，丢弃消息并记录警告
+			log.Printf("[WARN] Channel full for subject %s, dropping message", subject)
+		}
+	}, capacity)
+
+	if err != nil {
+		close(msgChan)
+		return nil, nil, err
+	}
+
+	return msgChan, sub, nil
+}
+
 // PublishWithContext 带上下文的发布消息（推荐使用）
 // 支持超时、取消等 context 控制
 func (c *Client) PublishWithContext(ctx context.Context, subject string, data []byte) error {
