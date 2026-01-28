@@ -245,6 +245,7 @@ func (c *Client) heartbeat() {
 			encoded := msg.Encode()
 			if _, err := c.conn.Write(encoded); err != nil {
 				log.Printf("Heartbeat error: %s", err)
+				c.triggerConnectionLost() // 触发重连
 				return
 			}
 		}

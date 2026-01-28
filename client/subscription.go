@@ -19,6 +19,7 @@ type Subscription struct {
 	wg             sync.WaitGroup
 	processedCount atomic.Int64
 	droppedCount   atomic.Int64
+	closeOnce      sync.Once // 防止重复关闭 channel
 }
 
 // MessageHandler 消息处理函数
@@ -85,28 +86,32 @@ func (s *Subscription) GetStats() SubscriptionStats {
 
 // Unsubscribe 取消订阅
 func (s *Subscription) Unsubscribe() error {
-	if !s.active {
-		return nil
-	}
+	// 使用 closeOnce 确保只执行一次
+	var err error
+	s.closeOnce.Do(func() {
+		if !s.active {
+			return
+		}
 
-	s.active = false
+		s.active = false
 
-	// 关闭消息channel，停止处理goroutine
-	close(s.msgChan)
+		// 关闭消息channel，停止处理goroutine
+		close(s.msgChan)
 
-	// 等待处理goroutine退出
-	s.wg.Wait()
+		// 等待处理goroutine退出
+		s.wg.Wait()
 
-	msg := protocol.NewMessageCmd(protocol.CmdUnsub, s.subject, nil)
-	encoded := msg.Encode()
-	_, err := s.client.conn.Write(encoded)
+		msg := protocol.NewMessageCmd(protocol.CmdUnsub, s.subject, nil)
+		encoded := msg.Encode()
+		_, err = s.client.conn.Write(encoded)
 
-	if err == nil {
-		s.client.removeSubscription(s)
-	}
+		if err == nil {
+			s.client.removeSubscription(s)
+		}
 
-	log.Printf("[DEBUG] Unsubscribed from %s (processed: %d, dropped: %d)",
-		s.subject, s.processedCount.Load(), s.droppedCount.Load())
+		log.Printf("[DEBUG] Unsubscribed from %s (processed: %d, dropped: %d)",
+			s.subject, s.processedCount.Load(), s.droppedCount.Load())
+	})
 
 	return err
 }
