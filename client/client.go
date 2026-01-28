@@ -451,9 +451,33 @@ func (c *Client) GetStats() ClientStats {
 	}
 }
 
-// ClientStats 客户端统计信息
+// ClientStats 客户端统计信息（增强版）
 type ClientStats struct {
-	ActiveSubscriptions int
+	// 连接状态
+	Connected            bool      // 是否已连接
+	ConnectedAt          time.Time // 连接时间
+	DisconnectedAt       time.Time // 断开时间
+
+	// 消息统计
+	MessagesSent         int64   // 发送消息总数
+	MessagesReceived     int64   // 接收消息总数
+	MessagesSentPerSec   float64 // 发送消息速率（msg/s）
+	MessagesReceivedPerSec float64 // 接收消息速率（msg/s）
+
+	// 网络统计
+	BytesSent            int64   // 发送字节总数
+	BytesReceived        int64   // 接收字节总数
+	AvgLatency           time.Duration // 平均延迟
+	LastLatency          time.Duration // 最后一次延迟
+
+	// 订阅统计
+	ActiveSubscriptions  int     // 活跃订阅数
+	TotalSubscriptions   int64   // 总订阅数
+
+	// 错误统计
+	ConnectionErrors     int64   // 连接错误数
+	PublishErrors        int64   // 发布错误数
+	SubscriptionErrors   int64   // 订阅错误数
 }
 
 // SetConnectionLostCallback 设置连接断开回调函数
