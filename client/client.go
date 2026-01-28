@@ -565,6 +565,7 @@ func (c *Client) GetStats() ClientStats {
 		ConnectionErrors:  c.connectionErrors.Load(),
 		PublishErrors:     c.publishErrors.Load(),
 		SubscriptionErrors: c.subscriptionErrors.Load(),
+		ReconnectCount:       c.reconnectCount.Load(),
 	}
 }
 
@@ -623,6 +624,7 @@ type ClientStats struct {
 	ConnectionErrors     int64   // 连接错误数
 	PublishErrors        int64   // 发布错误数
 	SubscriptionErrors   int64   // 订阅错误数
+	ReconnectCount        int64   // 重连次数
 }
 
 // SetConnectionLostCallback 设置连接断开回调函数
