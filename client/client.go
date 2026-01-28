@@ -288,6 +288,19 @@ func (c *Client) SubscribeWithOptionsContext(ctx context.Context, subject string
 		}
 
 		if attempt > 0 {
+			// 清理上一次的 ackChan（如果有）避免 channel 泄漏
+			c.pendingSubsMu.Lock()
+			if oldAck, exists := c.pendingSubs[subject]; exists {
+				select {
+				case <-oldAck.acked:
+					// channel 已关闭，跳过
+				default:
+					close(oldAck.acked) // 关闭旧 channel
+				}
+				delete(c.pendingSubs, subject)
+			}
+			c.pendingSubsMu.Unlock()
+
 			log.Printf("[INFO] Retrying subscription to %s (attempt %d/%d)...", subject, attempt, maxRetries)
 			time.Sleep(retryDelay)
 		}
@@ -811,26 +824,26 @@ func (c *Client) doReconnect() error {
 
 // restoreSubscriptions 恢复所有订阅
 func (c *Client) restoreSubscriptions() {
+	// 先复制订阅列表后释放锁，避免持锁期间进行网络操作
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	subs := make([]*Subscription, len(c.subscriptions))
+	copy(subs, c.subscriptions)
+	c.mu.Unlock()
 
-	log.Printf("[INFO] Restoring %d subscriptions...", len(c.subscriptions))
+	log.Printf("[INFO] Restoring %d subscriptions...", len(subs))
 
-	for i, sub := range c.subscriptions {
+	for i, sub := range subs {
 		if !sub.active {
 			continue
 		}
 
 		log.Printf("[INFO] Restoring subscription #%d: %s", i, sub.subject)
 
-		// 重新订阅
+		// 重新订阅（现在不需要持锁）
 		msg := protocol.NewMessageCmd(protocol.CmdSub, sub.subject, nil)
 		encoded := msg.Encode()
 
-		c.mu.Unlock()
 		_, err := c.conn.Write(encoded)
-		c.mu.Lock()
-
 		if err != nil {
 			log.Printf("[ERROR] Failed to restore subscription %s: %v", sub.subject, err)
 			c.subscriptionErrors.Add(1)
