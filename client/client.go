@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -34,6 +35,8 @@ type subscriptionACK struct {
 // Client KCP-NATS 客户端（增强版）
 type Client struct {
 	conn               *kcp.UDPSession
+	ctx                context.Context    // 用于取消操作的上下文
+	cancel             context.CancelFunc // 取消函数
 	subscriptions      []*Subscription
 	mu                 sync.RWMutex
 	done               chan struct{}
@@ -44,8 +47,16 @@ type Client struct {
 	pendingSubsMu      sync.RWMutex     // pendingSubs 的锁
 }
 
-// Connect 连接到服务器
-func Connect(addr string) (*Client, error) {
+// ConnectWithContext 带上下文的连接（推荐使用）
+// 支持超时、取消等 context 控制
+func ConnectWithContext(ctx context.Context, addr string) (*Client, error) {
+	// 检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	conn, err := kcp.DialWithOptions(addr, nil, 10, 3)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect: %w", err)
@@ -61,8 +72,13 @@ func Connect(addr string) (*Client, error) {
 	conn.SetWriteDelay(false)
 	conn.SetStreamMode(false)
 
+	// 创建 context（基于传入的 context）
+	clientCtx, cancel := context.WithCancel(ctx)
+
 	client := &Client{
 		conn:            conn,
+		ctx:             clientCtx,
+		cancel:          cancel,
 		subscriptions:   make([]*Subscription, 0),
 		done:            make(chan struct{}),
 		receiveLoopDone: make(chan struct{}),
@@ -79,6 +95,12 @@ func Connect(addr string) (*Client, error) {
 	return client, nil
 }
 
+// Connect 连接到服务器
+// Deprecated: 推荐使用 ConnectWithContext 以支持 context.Context
+func Connect(addr string) (*Client, error) {
+	return ConnectWithContext(context.Background(), addr)
+}
+
 // receiveLoop 接收消息循环
 func (c *Client) receiveLoop() {
 	defer close(c.receiveLoopDone) // 退出时关闭通道，通知应用层
@@ -86,6 +108,10 @@ func (c *Client) receiveLoop() {
 	for {
 		select {
 		case <-c.done:
+			log.Printf("[INFO] receiveLoop stopped by done channel")
+			return
+		case <-c.ctx.Done():
+			log.Printf("[INFO] receiveLoop stopped by context")
 			return
 		default:
 			c.conn.SetReadDeadline(time.Now().Add(90 * time.Second))
@@ -188,13 +214,22 @@ func (c *Client) heartbeat() {
 	}
 }
 
-// Subscribe 订阅主题（带ACK确认和重试）
-func (c *Client) Subscribe(subject string, callback MessageHandler) (*Subscription, error) {
-	return c.SubscribeWithOptions(subject, callback, 100)
+// SubscribeWithContext 带上下文的订阅（推荐使用）
+// 支持超时、取消等 context 控制
+func (c *Client) SubscribeWithContext(ctx context.Context, subject string, callback MessageHandler) (*Subscription, error) {
+	// 检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// 默认 channel capacity 为 100
+	return c.SubscribeWithOptionsContext(ctx, subject, callback, 100)
 }
 
-// SubscribeWithOptions 带配置的订阅（带ACK确认和重试）
-func (c *Client) SubscribeWithOptions(subject string, callback MessageHandler, channelCapacity int) (*Subscription, error) {
+// SubscribeWithOptionsContext 带配置和上下文的订阅（带ACK确认和重试）
+func (c *Client) SubscribeWithOptionsContext(ctx context.Context, subject string, callback MessageHandler, channelCapacity int) (*Subscription, error) {
 	if channelCapacity <= 0 {
 		channelCapacity = 100
 	}
@@ -208,6 +243,13 @@ func (c *Client) SubscribeWithOptions(subject string, callback MessageHandler, c
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		// 检查 context 是否已取消
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
 		if attempt > 0 {
 			log.Printf("[INFO] Retrying subscription to %s (attempt %d/%d)...", subject, attempt, maxRetries)
 			time.Sleep(retryDelay)
@@ -259,7 +301,7 @@ func (c *Client) SubscribeWithOptions(subject string, callback MessageHandler, c
 
 		log.Printf("[DEBUG] Sent SUB command for %s, waiting for ACK...", subject)
 
-		// 等待ACK响应或超时
+		// 等待ACK响应或超时（支持 context 取消）
 		select {
 		case <-ackChan:
 			// 收到ACK
@@ -281,6 +323,18 @@ func (c *Client) SubscribeWithOptions(subject string, callback MessageHandler, c
 
 			continue
 
+		case <-ctx.Done():
+			// context 取消
+			c.pendingSubsMu.Lock()
+			delete(c.pendingSubs, subject)
+			c.pendingSubsMu.Unlock()
+
+			c.removeSubscription(sub)
+			sub.active = false
+			close(sub.msgChan)
+
+			return nil, ctx.Err()
+
 		case <-c.done:
 			return nil, fmt.Errorf("connection closed")
 		}
@@ -289,8 +343,34 @@ func (c *Client) SubscribeWithOptions(subject string, callback MessageHandler, c
 	return nil, fmt.Errorf("subscription failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-// Publish 发布消息
-func (c *Client) Publish(subject string, data []byte) error {
+// Subscribe 订阅主题（带ACK确认和重试）
+// Deprecated: 推荐使用 SubscribeWithContext 以支持 context.Context
+func (c *Client) Subscribe(subject string, callback MessageHandler) (*Subscription, error) {
+	return c.SubscribeWithContext(context.Background(), subject, callback)
+}
+
+// SubscribeWithOptions 带配置的订阅（带ACK确认和重试）
+// Deprecated: 推荐使用 SubscribeWithOptionsContext 以支持 context.Context
+func (c *Client) SubscribeWithOptions(subject string, callback MessageHandler, channelCapacity int) (*Subscription, error) {
+	return c.SubscribeWithOptionsContext(context.Background(), subject, callback, channelCapacity)
+}
+
+// PublishWithContext 带上下文的发布消息（推荐使用）
+// 支持超时、取消等 context 控制
+func (c *Client) PublishWithContext(ctx context.Context, subject string, data []byte) error {
+	// 检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// 支持写入超时
+	if deadline, ok := ctx.Deadline(); ok {
+		c.conn.SetWriteDeadline(deadline)
+		defer c.conn.SetWriteDeadline(time.Time{}) // 重置 deadline
+	}
+
 	msg := protocol.NewMessageCmd(protocol.CmdPub, subject, data)
 	encoded := msg.Encode()
 	_, err := c.conn.Write(encoded)
@@ -298,6 +378,12 @@ func (c *Client) Publish(subject string, data []byte) error {
 		return fmt.Errorf("failed to publish: %w", err)
 	}
 	return nil
+}
+
+// Publish 发布消息
+// Deprecated: 推荐使用 PublishWithContext 以支持 context.Context
+func (c *Client) Publish(subject string, data []byte) error {
+	return c.PublishWithContext(context.Background(), subject, data)
 }
 
 // removeSubscription 移除订阅
@@ -315,6 +401,11 @@ func (c *Client) removeSubscription(sub *Subscription) {
 
 // Close 关闭连接
 func (c *Client) Close() error {
+	// 取消 context，触发所有监听 ctx.Done() 的操作
+	if c.cancel != nil {
+		c.cancel()
+	}
+
 	close(c.done)
 
 	c.mu.Lock()
