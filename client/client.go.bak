@@ -104,8 +104,6 @@ func ConnectWithContext(ctx context.Context, addr string) (*Client, error) {
 		receiveLoopDone: make(chan struct{}),
 		heartbeatDone:   make(chan struct{}),
 		pendingSubs:     make(map[string]*subscriptionACK),
-		connectedAt:     time.Now(),
-		latencies:       make([]time.Duration, 0, 1000), // 预分配容量
 	}
 
 	// 启动消息接收循环
@@ -423,40 +421,37 @@ func (c *Client) removeSubscription(sub *Subscription) {
 
 // Close 关闭连接
 func (c *Client) Close() error {
-	var err error
-	c.closeOnce.Do(func() {
-		// 取消 context，触发所有监听 ctx.Done() 的操作
-		if c.cancel != nil {
-			c.cancel()
+	// 取消 context，触发所有监听 ctx.Done() 的操作
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	close(c.done)
+
+	c.mu.Lock()
+	for _, sub := range c.subscriptions {
+		sub.active = false
+	}
+	c.subscriptions = nil
+	c.mu.Unlock()
+
+	// 清理待确认的订阅
+	c.pendingSubsMu.Lock()
+	for subject, ack := range c.pendingSubs {
+		select {
+		case <-ack.acked:
+		default:
+			close(ack.acked)
 		}
+		delete(c.pendingSubs, subject)
+	}
+	c.pendingSubsMu.Unlock()
 
-		close(c.done)
+	if c.conn != nil {
+		return c.conn.Close()
+	}
 
-		c.mu.Lock()
-		for _, sub := range c.subscriptions {
-			sub.active = false
-		}
-		c.subscriptions = nil
-		c.mu.Unlock()
-
-		// 清理待确认的订阅
-		c.pendingSubsMu.Lock()
-		for subject, ack := range c.pendingSubs {
-			select {
-			case <-ack.acked:
-			default:
-				close(ack.acked)
-			}
-			delete(c.pendingSubs, subject)
-		}
-		c.pendingSubsMu.Unlock()
-
-		if c.conn != nil {
-			err = c.conn.Close()
-		}
-	})
-
-	return err
+	return nil
 }
 
 // GetStats 获取客户端统计
@@ -464,7 +459,6 @@ func (c *Client) GetStats() ClientStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// 计算活跃订阅数
 	activeSubs := 0
 	for _, sub := range c.subscriptions {
 		if sub.active {
@@ -472,80 +466,8 @@ func (c *Client) GetStats() ClientStats {
 		}
 	}
 
-	// 计算运行时间和 QPS
-	var uptime time.Duration
-	if !c.connectedAt.IsZero() {
-		uptime = time.Since(c.connectedAt)
-	}
-
-	var sentPerSec, receivedPerSec float64
-	if uptime.Seconds() > 0 {
-		sentPerSec = float64(c.messagesSent.Load()) / uptime.Seconds()
-		receivedPerSec = float64(c.messagesReceived.Load()) / uptime.Seconds()
-	}
-
-	// 计算平均延迟
-	c.latencyMu.RLock()
-	avgLatency := c.calculateAvgLatencyLocked()
-	lastLatency := c.lastLatency
-	c.latencyMu.RUnlock()
-
-	// 判断是否已连接
-	connected := c.conn != nil
-
 	return ClientStats{
-		// 连接状态
-		Connected:     connected,
-		ConnectedAt:   c.connectedAt,
-
-		// 消息统计
-		MessagesSent:           c.messagesSent.Load(),
-		MessagesReceived:       c.messagesReceived.Load(),
-		MessagesSentPerSec:     sentPerSec,
-		MessagesReceivedPerSec: receivedPerSec,
-
-		// 网络统计
-		BytesSent:    c.bytesSent.Load(),
-		BytesReceived: c.bytesReceived.Load(),
-		AvgLatency:   avgLatency,
-		LastLatency:  lastLatency,
-
-		// 订阅统计
 		ActiveSubscriptions: activeSubs,
-		TotalSubscriptions:  c.totalSubscriptions.Load(),
-
-		// 错误统计
-		ConnectionErrors:  c.connectionErrors.Load(),
-		PublishErrors:     c.publishErrors.Load(),
-		SubscriptionErrors: c.subscriptionErrors.Load(),
-	}
-}
-
-// calculateAvgLatencyLocked 计算平均延迟（调用时必须持有 latencyMu 锁）
-func (c *Client) calculateAvgLatencyLocked() time.Duration {
-	if len(c.latencies) == 0 {
-		return 0
-	}
-
-	var sum time.Duration
-	for _, l := range c.latencies {
-		sum += l
-	}
-
-	return sum / time.Duration(len(c.latencies))
-}
-
-// recordLatency 记录延迟
-func (c *Client) recordLatency(latency time.Duration) {
-	c.latencyMu.Lock()
-	defer c.latencyMu.Unlock()
-
-	c.lastLatency = latency
-
-	// 滑动窗口：保留最近 1000 个样本
-	c.latencies = append(c.latencies, latency)
-	if len(c.latencies) > 1000 {
-		c.latencies = c.latencies[1:]
 	}
 }
 
