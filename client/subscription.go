@@ -14,7 +14,7 @@ type Subscription struct {
 	client         *Client
 	subject        string
 	callback       MessageHandler
-	active         bool
+	active         atomic.Bool
 	msgChan        chan *Message
 	wg             sync.WaitGroup
 	processedCount atomic.Int64
@@ -61,10 +61,13 @@ func (s *Subscription) startProcessing() {
 
 // TryEnqueue 尝试将消息放入队列（非阻塞）
 func (s *Subscription) TryEnqueue(msg *Message) bool {
-	if !s.active {
+	if !s.active.Load() {
 		return false
 	}
 
+	defer func() {
+		_ = recover()
+	}()
 	select {
 	case s.msgChan <- msg:
 		return true
@@ -80,7 +83,7 @@ func (s *Subscription) GetStats() SubscriptionStats {
 	return SubscriptionStats{
 		ProcessedCount: s.processedCount.Load(),
 		DroppedCount:   s.droppedCount.Load(),
-		Active:         s.active,
+		Active:         s.active.Load(),
 	}
 }
 
@@ -89,11 +92,11 @@ func (s *Subscription) Unsubscribe() error {
 	// 使用 closeOnce 确保只执行一次
 	var err error
 	s.closeOnce.Do(func() {
-		if !s.active {
+		if !s.active.Load() {
 			return
 		}
 
-		s.active = false
+		s.active.Store(false)
 
 		// 关闭消息channel，停止处理goroutine
 		close(s.msgChan)
@@ -103,7 +106,17 @@ func (s *Subscription) Unsubscribe() error {
 
 		msg := protocol.NewMessageCmd(protocol.CmdUnsub, s.subject, nil)
 		encoded := msg.Encode()
-		_, err = s.client.conn.Write(encoded)
+		s.client.mu.RLock()
+		conn := s.client.conn
+		writeTimeout := s.client.writeTimeout
+		s.client.mu.RUnlock()
+		if conn == nil {
+			err = nil
+			s.client.removeSubscription(s)
+			return
+		}
+		conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+		_, err = conn.Write(encoded)
 
 		if err == nil {
 			s.client.removeSubscription(s)
@@ -118,5 +131,5 @@ func (s *Subscription) Unsubscribe() error {
 
 // IsActive 返回订阅是否活跃
 func (s *Subscription) IsActive() bool {
-	return s.active
+	return s.active.Load()
 }

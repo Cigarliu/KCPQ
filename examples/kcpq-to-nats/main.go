@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
+	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -15,15 +18,17 @@ import (
 
 // ForwarderConfig 配置
 type ForwarderConfig struct {
-	KCPQServer       string        // KCPQ 服务器地址
-	KCPQSubject      string        // KCPQ 订阅主题
-	NATSServer       string        // NATS 服务器地址
-	NATSSubject      string        // NATS 发布主题
-	ReconnectDelay   time.Duration // 重连延迟（废弃，v2.0 使用自动重连）
-	StatsInterval    time.Duration // 统计打印间隔
-	AutoReconnect    bool          // 是否启用自动重连
+	KCPQServer        string        // KCPQ 服务器地址
+	KCPQSubject       string        // KCPQ 订阅主题
+	NATSServer        string        // NATS 服务器地址
+	NATSSubject       string        // NATS 发布主题
+	AES256KeyHex      string        // AES-256 PSK（hex）
+	AES256Key         []byte        // AES-256 PSK（32 bytes）
+	ReconnectDelay    time.Duration // 重连延迟（废弃，v2.0 使用自动重连）
+	StatsInterval     time.Duration // 统计打印间隔
+	AutoReconnect     bool          // 是否启用自动重连
 	ReconnectInterval time.Duration // 自动重连间隔
-	UseChannelMode   bool          // 是否使用 Channel 订阅模式（v2.0 推荐）
+	UseChannelMode    bool          // 是否使用 Channel 订阅模式（v2.0 推荐）
 }
 
 // ForwarderStats 统计信息
@@ -36,14 +41,14 @@ type ForwarderStats struct {
 
 // Forwarder KCPQ 到 NATS 转发器
 type Forwarder struct {
-	config        *ForwarderConfig
-	stats         *ForwarderStats
-	kcpClient     *client.Client
-	natsConn      *nats.Conn
-	subscription  *client.Subscription
-	msgChan       <-chan *client.Message // v2.0: Channel 订阅模式
-	ctx           context.Context
-	cancel        context.CancelFunc
+	config       *ForwarderConfig
+	stats        *ForwarderStats
+	kcpClient    *client.Client
+	natsConn     *nats.Conn
+	subscription *client.Subscription
+	msgChan      <-chan *client.Message // v2.0: Channel 订阅模式
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // NewForwarder 创建转发器
@@ -71,7 +76,8 @@ func (f *Forwarder) Start() error {
 	log.Printf("NATS Subject: %s", f.config.NATSSubject)
 	log.Printf("Auto Reconnect: %v", f.config.AutoReconnect)
 	log.Printf("Channel Mode: %v", f.config.UseChannelMode)
-	log.Println("===========================================\n")
+	log.Println("===========================================")
+	log.Println()
 
 	// 连接到 KCPQ（v2.0 API）
 	if err := f.connectToKCPQ(); err != nil {
@@ -101,7 +107,10 @@ func (f *Forwarder) connectToKCPQ() error {
 	log.Printf("[INFO] Connecting to KCPQ: %s", f.config.KCPQServer)
 
 	// v2.0: 使用 ConnectWithContext 支持 context
-	cli, err := client.ConnectWithContext(f.ctx, f.config.KCPQServer)
+	if len(f.config.AES256Key) != 32 {
+		return fmt.Errorf("AES-256 key must be 32 bytes, got %d", len(f.config.AES256Key))
+	}
+	cli, err := client.ConnectWithContext(f.ctx, f.config.KCPQServer, f.config.AES256Key)
 	if err != nil {
 		return err
 	}
@@ -244,7 +253,7 @@ func (f *Forwarder) printStats() {
 	// 计算速率
 	frameRate := float64(totalFrames) / elapsed
 	byteRate := float64(totalBytes) / elapsed
-	mbps := byteRate * 8 / 1000000 // Mbps
+	mbps := byteRate * 8 / 1000000                                    // Mbps
 	avgFrameSize := float64(totalBytes) / float64(totalFrames) / 1024 // KB
 
 	log.Println("===========================================")
@@ -280,7 +289,8 @@ func (f *Forwarder) printStats() {
 		log.Printf("  Subscription Errors: %d", stats.SubscriptionErrors)
 	}
 
-	log.Println("===========================================\n")
+	log.Println("===========================================")
+	log.Println()
 }
 
 // Stop 停止转发器
@@ -306,17 +316,35 @@ func (f *Forwarder) Stop() {
 }
 
 func main() {
+	configPath := flag.String("config", "", "")
+	flag.Parse()
+
 	// 配置
 	config := &ForwarderConfig{
-		KCPQServer:        "localhost:4000", // KCPQ 服务器（可通过环境变量 KCPQ_SERVER 覆盖）
-		KCPQSubject:       "h264.stream",         // KCPQ 订阅主题
-		NATSServer:        "nats://localhost:4222",     // NATS 服务器
-		NATSSubject:       "h264.stream",         // NATS 发布主题
-		ReconnectDelay:    3 * time.Second,       // 重连延迟（废弃）
-		StatsInterval:     10 * time.Second,      // 每 10 秒打印统计
-		AutoReconnect:     true,                  // v2.0: 启用自动重连
-		ReconnectInterval: 5 * time.Second,       // v2.0: 自动重连间隔
-		UseChannelMode:    true,                  // v2.0: 使用 Channel 订阅模式（推荐）
+		KCPQServer:        "208.81.129.186:4000",  // KCPQ 服务器（可通过环境变量 KCPQ_SERVER 覆盖）
+		KCPQSubject:       "h264.stream",          // KCPQ 订阅主题
+		NATSServer:        "nats://cctv.mba:4222", // NATS 服务器
+		NATSSubject:       "h264.stream",          // NATS 发布主题
+		AES256KeyHex:      "",                     // 可通过配置文件或环境变量 KCPQ_AES256_KEY_HEX 设置
+		ReconnectDelay:    3 * time.Second,        // 重连延迟（废弃）
+		StatsInterval:     10 * time.Second,       // 每 10 秒打印统计
+		AutoReconnect:     true,                   // v2.0: 启用自动重连
+		ReconnectInterval: 5 * time.Second,        // v2.0: 自动重连间隔
+		UseChannelMode:    true,                   // v2.0: 使用 Channel 订阅模式（推荐）
+	}
+
+	cfgPath := *configPath
+	if cfgPath == "" {
+		if _, err := os.Stat("config.yaml"); err == nil {
+			cfgPath = "config.yaml"
+		}
+	}
+	if cfgPath != "" {
+		cfgFile, err := LoadConfig(cfgPath)
+		if err != nil {
+			log.Fatalf("[FATAL] Failed to load config: %v", err)
+		}
+		config = cfgFile.ToForwarderConfig()
 	}
 
 	// 环境变量覆盖
@@ -332,6 +360,20 @@ func main() {
 	if natsSubj := os.Getenv("NATS_SUBJECT"); natsSubj != "" {
 		config.NATSSubject = natsSubj
 	}
+	if keyHex := os.Getenv("KCPQ_AES256_KEY_HEX"); keyHex != "" {
+		config.AES256KeyHex = keyHex
+	}
+	if config.AES256KeyHex == "" {
+		log.Fatal("[FATAL] KCPQ_AES256_KEY_HEX (or config aes256_key_hex) is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(config.AES256KeyHex)
+	if err != nil {
+		log.Fatalf("[FATAL] invalid aes256_key_hex: %v", err)
+	}
+	if len(key) != 32 {
+		log.Fatalf("[FATAL] aes256_key_hex must decode to 32 bytes, got %d", len(key))
+	}
+	config.AES256Key = key
 
 	// 创建转发器
 	forwarder := NewForwarder(config)

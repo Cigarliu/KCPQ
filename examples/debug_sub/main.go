@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/kcpq/client"
@@ -10,7 +12,15 @@ import (
 
 func main() {
 	fmt.Println("连接服务器...")
-	cli, err := client.Connect("localhost:4000")
+	keyHex := os.Getenv("KCPQ_AES256_KEY_HEX")
+	if keyHex == "" {
+		log.Fatal("KCPQ_AES256_KEY_HEX is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		log.Fatalf("invalid KCPQ_AES256_KEY_HEX: %v", err)
+	}
+	cli, err := client.Connect("localhost:4000", key)
 	if err != nil {
 		log.Fatalf("连接失败: %v", err)
 	}

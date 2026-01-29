@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,17 +16,56 @@ import (
 )
 
 func main() {
-	// 启动 pprof
-	go func() {
-		log.Println("Pprof listening on :6060")
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
+	configPath := flag.String("config", "", "")
+	flag.Parse()
 
-	addr := os.Getenv("KCP_NATS_ADDR")
-	if addr == "" {
-		addr = ":4000"
+	cfg := &ConfigFile{
+		ListenAddr: ":4000",
+		PprofAddr:  "localhost:6060",
 	}
-	srv := server.NewServer(addr)
+
+	cfgPath := *configPath
+	if cfgPath == "" {
+		if _, err := os.Stat("config.yaml"); err == nil {
+			cfgPath = "config.yaml"
+		}
+	}
+	if cfgPath != "" {
+		loaded, err := LoadConfig(cfgPath)
+		if err != nil {
+			log.Fatalf("Failed to load config: %v", err)
+		}
+		cfg = loaded
+	}
+
+	if addr := os.Getenv("KCP_NATS_ADDR"); addr != "" {
+		cfg.ListenAddr = addr
+	}
+	if pprofAddr := os.Getenv("KCPQ_PPROF_ADDR"); pprofAddr != "" {
+		cfg.PprofAddr = pprofAddr
+	}
+	if keyHex := os.Getenv("KCPQ_AES256_KEY_HEX"); keyHex != "" {
+		cfg.AES256KeyHex = keyHex
+	}
+	if cfg.AES256KeyHex == "" {
+		log.Fatal("KCPQ_AES256_KEY_HEX (or config aes256_key_hex) is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(cfg.AES256KeyHex)
+	if err != nil {
+		log.Fatalf("invalid aes256_key_hex: %v", err)
+	}
+	if len(key) != 32 {
+		log.Fatalf("aes256_key_hex must decode to 32 bytes, got %d", len(key))
+	}
+
+	go func() {
+		log.Printf("Pprof listening on %s", cfg.PprofAddr)
+		log.Println(http.ListenAndServe(cfg.PprofAddr, nil))
+	}()
+	srv, err := server.NewServer(cfg.ListenAddr, key)
+	if err != nil {
+		log.Fatalf("Failed to create server: %v", err)
+	}
 
 	// 启动服务器
 	if err := srv.Start(); err != nil {

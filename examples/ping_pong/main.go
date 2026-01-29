@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math/rand"
@@ -13,13 +14,13 @@ import (
 )
 
 type PingPongTest struct {
-	ClientID       string
-	ServerAddr     string
-	MessageCount   int
-	MessageSize    int
-	Results        []time.Duration
-	mu             sync.Mutex
-	ReceivedCount  int
+	ClientID      string
+	ServerAddr    string
+	MessageCount  int
+	MessageSize   int
+	Results       []time.Duration
+	mu            sync.Mutex
+	ReceivedCount int
 }
 
 func NewPingPongTest(clientID, serverAddr string, messageCount, messageSize int) *PingPongTest {
@@ -42,7 +43,15 @@ func (ppt *PingPongTest) Run() error {
 	fmt.Printf("\n")
 
 	// 连接服务器
-	cli, err := client.Connect(ppt.ServerAddr)
+	keyHex := os.Getenv("KCPQ_AES256_KEY_HEX")
+	if keyHex == "" {
+		return fmt.Errorf("KCPQ_AES256_KEY_HEX is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return fmt.Errorf("invalid KCPQ_AES256_KEY_HEX: %w", err)
+	}
+	cli, err := client.Connect(ppt.ServerAddr, key)
 	if err != nil {
 		return fmt.Errorf("connect failed: %w", err)
 	}
@@ -198,7 +207,7 @@ func (ppt *PingPongTest) calculateJitter() float64 {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
-	serverAddr := "142.171.156.96:4000"  // Remote server
+	serverAddr := "142.171.156.96:4000" // Remote server
 	if addr := os.Getenv("KCP_NATS_ADDR"); addr != "" {
 		serverAddr = addr
 	}

@@ -2,7 +2,17 @@
 
 本目录包含 KCPQ v2.0 的示例应用程序，展示如何在实际场景中使用 KCPQ 客户端库。
 
-## 📁 目录结构
+## � 强制加密（AES-256 PSK）
+
+当前代码库已强制启用 KCP 层 AES-256 加密，运行任何示例前需设置 32 字节密钥（64 个 hex 字符）：
+
+```bash
+export KCPQ_AES256_KEY_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+客户端连接接口需要额外传入该密钥（例如 `ConnectWithContext(ctx, addr, key)` / `Connect(addr, key)`）。
+
+## �📁 目录结构
 
 ```
 examples/

@@ -1,0 +1,8 @@
+udp_listen: ':22345'
+kcpq_server: 'al.cctv.mba:4000'
+subject: 'h264.stream'
+aes256_key_hex: '868af252ba94b53544998d998f359490ce536c258de7e29fe8c16b5ee7ffc700'
+stats_interval: 10
+buffer_size: 1472000
+auto_reconnect: true
+reconnect_interval: 5

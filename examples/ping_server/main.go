@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/kcpq/client"
@@ -10,12 +12,20 @@ import (
 
 func main() {
 	addr := "localhost:4000"
-	if addrEnv := "" /* os.Getenv("KCP_NATS_ADDR") */; addrEnv != "" {
+	if addrEnv := os.Getenv("KCP_NATS_ADDR"); addrEnv != "" {
 		addr = addrEnv
 	}
 
 	fmt.Printf("Connecting to %s...\n", addr)
-	cli, err := client.Connect(addr)
+	keyHex := os.Getenv("KCPQ_AES256_KEY_HEX")
+	if keyHex == "" {
+		log.Fatal("KCPQ_AES256_KEY_HEX is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		log.Fatalf("invalid KCPQ_AES256_KEY_HEX: %v", err)
+	}
+	cli, err := client.Connect(addr, key)
 	if err != nil {
 		log.Fatalf("Connect failed: %v", err)
 	}

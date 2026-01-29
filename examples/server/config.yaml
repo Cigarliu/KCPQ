@@ -1,0 +1,3 @@
+listen_addr: ":4000"
+pprof_addr: "localhost:6060"
+aes256_key_hex: "868af252ba94b53544998d998f359490ce536c258de7e29fe8c16b5ee7ffc700"

@@ -2,23 +2,35 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/kcpq/client"
 )
 
 func main() {
-	fmt.Println("=== KCPQ Context API 示例 ===\n")
+	fmt.Println("=== KCPQ Context API 示例 ===")
+	fmt.Println()
 
 	// 示例 1: 带超时的连接
 	fmt.Println("示例 1: 带超时的连接")
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel1()
 
-	cli, err := client.ConnectWithContext(ctx1, "localhost:4000")
+	keyHex := os.Getenv("KCPQ_AES256_KEY_HEX")
+	if keyHex == "" {
+		log.Fatal("KCPQ_AES256_KEY_HEX is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		log.Fatalf("invalid KCPQ_AES256_KEY_HEX: %v", err)
+	}
+
+	cli, err := client.ConnectWithContext(ctx1, "localhost:4000", key)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			log.Fatalf("连接超时: %v", err)

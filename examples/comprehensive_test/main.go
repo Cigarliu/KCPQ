@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/kcpq/client"
@@ -43,7 +45,7 @@ func testContextSupport() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	cli, err := client.ConnectWithContext(ctx, "localhost:4000")
+	cli, err := client.ConnectWithContext(ctx, "localhost:4000", mustAES256Key())
 	if err != nil {
 		log.Fatalf("❌ 连接失败: %v", err)
 	}
@@ -101,7 +103,7 @@ func testChannelSubscription() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli, err := client.ConnectWithContext(ctx, "localhost:4000")
+	cli, err := client.ConnectWithContext(ctx, "localhost:4000", mustAES256Key())
 	if err != nil {
 		log.Fatalf("❌ 连接失败: %v", err)
 	}
@@ -155,7 +157,7 @@ func testAutoReconnect() {
 	fmt.Println("测试 3: 自动重连功能")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	cli, err := client.Connect("localhost:4000")
+	cli, err := client.Connect("localhost:4000", mustAES256Key())
 	if err != nil {
 		log.Fatalf("❌ 连接失败: %v", err)
 	}
@@ -205,7 +207,7 @@ func testStatistics() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli, err := client.ConnectWithContext(ctx, "localhost:4000")
+	cli, err := client.ConnectWithContext(ctx, "localhost:4000", mustAES256Key())
 	if err != nil {
 		log.Fatalf("❌ 连接失败: %v", err)
 	}
@@ -226,7 +228,7 @@ func testStatistics() {
 	for i := 0; i < 100; i++ {
 		cli.Publish("test.stats.data", []byte("message"))
 		if i%20 == 19 {
-			fmt.Printf("    进度: %d%%\n", (i+1))
+			fmt.Printf("    进度: %d%%\n", (i + 1))
 		}
 	}
 
@@ -253,4 +255,19 @@ func testStatistics() {
 	fmt.Printf("    订阅错误: %d\n", stats.SubscriptionErrors)
 
 	fmt.Println()
+}
+
+func mustAES256Key() []byte {
+	keyHex := os.Getenv("KCPQ_AES256_KEY_HEX")
+	if keyHex == "" {
+		log.Fatal("KCPQ_AES256_KEY_HEX is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		log.Fatalf("invalid KCPQ_AES256_KEY_HEX: %v", err)
+	}
+	if len(key) != 32 {
+		log.Fatalf("KCPQ_AES256_KEY_HEX must decode to 32 bytes, got %d", len(key))
+	}
+	return key
 }

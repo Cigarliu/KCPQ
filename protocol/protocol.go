@@ -7,6 +7,11 @@ import (
 	"io"
 )
 
+const (
+	MaxSubjectLen = 4 * 1024
+	MaxBodyLen    = 8 * 1024 * 1024
+)
+
 // 协议命令类型
 const (
 	CmdSub   = byte(0x01)
@@ -134,6 +139,9 @@ func ParseWithRemaining(data []byte) (*Message, []byte, error) {
 
 	// 读取消息体长度
 	bodyLen := int(binary.BigEndian.Uint32(data[0:4]))
+	if bodyLen <= 0 || bodyLen > MaxBodyLen {
+		return nil, data, fmt.Errorf("invalid body length: %d", bodyLen)
+	}
 	totalPacketLen := bodyLen + 4
 
 	// 检查数据是否完整
@@ -156,7 +164,7 @@ func ParseWithRemaining(data []byte) (*Message, []byte, error) {
 	offset += 2
 
 	// 检查subject长度是否合法
-	if offset+subjectLen > len(msgData) {
+	if subjectLen < 0 || subjectLen > MaxSubjectLen || offset+subjectLen > len(msgData) {
 		return nil, data, fmt.Errorf("invalid subject length: %d, available: %d",
 			subjectLen, len(msgData)-offset)
 	}
@@ -190,6 +198,9 @@ func ParseFromReader(reader io.Reader) (*Message, error) {
 	}
 
 	bodyLen := int(binary.BigEndian.Uint32(lengthBuf[:]))
+	if bodyLen <= 0 || bodyLen > MaxBodyLen {
+		return nil, fmt.Errorf("invalid body length: %d", bodyLen)
+	}
 
 	// 读取消息体
 	msgData := make([]byte, bodyLen)
@@ -215,7 +226,7 @@ func ParseFromReader(reader io.Reader) (*Message, error) {
 	offset += 2
 
 	// 检查subject长度是否合法
-	if offset+subjectLen > len(msgData) {
+	if subjectLen < 0 || subjectLen > MaxSubjectLen || offset+subjectLen > len(msgData) {
 		return nil, fmt.Errorf("invalid subject length: %d, available: %d",
 			subjectLen, len(msgData)-offset)
 	}

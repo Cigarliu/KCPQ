@@ -12,10 +12,12 @@ func TestSubscribeChan_Basic(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -64,10 +66,12 @@ func TestSubscribeChan_WithContext(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -123,10 +127,12 @@ func TestSubscribeChan_ChannelFull(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -177,10 +183,12 @@ func TestSubscribeChan_MultipleConsumers(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -247,10 +255,12 @@ func TestSubscribeChan_SelectTimeout(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -298,10 +308,12 @@ func TestSubscribeChan_CloseChannel(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -340,10 +352,12 @@ func TestSubscribeChan_ContextCancellation(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}

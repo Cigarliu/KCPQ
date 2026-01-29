@@ -23,7 +23,13 @@ func (r *Router) Subscribe(subject string, session *Session) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.subscriptions[subject] = append(r.subscriptions[subject], session)
+	sessions := r.subscriptions[subject]
+	for _, s := range sessions {
+		if s == session {
+			return
+		}
+	}
+	r.subscriptions[subject] = append(sessions, session)
 }
 
 // Unsubscribe 取消订阅
@@ -36,13 +42,13 @@ func (r *Router) Unsubscribe(subject string, session *Session) {
 		return
 	}
 
-	// 从列表中移除 session
-	for i, s := range sessions {
-		if s == session {
-			r.subscriptions[subject] = append(sessions[:i], sessions[i+1:]...)
-			break
+	filtered := sessions[:0]
+	for _, s := range sessions {
+		if s != session {
+			filtered = append(filtered, s)
 		}
 	}
+	r.subscriptions[subject] = filtered
 
 	// 如果没有订阅者了，删除 key
 	if len(r.subscriptions[subject]) == 0 {
@@ -56,12 +62,13 @@ func (r *Router) RemoveSession(session *Session) {
 	defer r.mu.Unlock()
 
 	for subject, sessions := range r.subscriptions {
-		for i, s := range sessions {
-			if s == session {
-				r.subscriptions[subject] = append(sessions[:i], sessions[i+1:]...)
-				break
+		filtered := sessions[:0]
+		for _, s := range sessions {
+			if s != session {
+				filtered = append(filtered, s)
 			}
 		}
+		r.subscriptions[subject] = filtered
 		if len(r.subscriptions[subject]) == 0 {
 			delete(r.subscriptions, subject)
 		}
@@ -116,7 +123,6 @@ func (r *Router) Match(pattern, subject string) bool {
 
 	return true
 }
-
 
 // FindSubscribers 找到所有匹配的订阅者
 func (r *Router) FindSubscribers(subject string) []*Session {

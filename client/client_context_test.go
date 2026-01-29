@@ -13,8 +13,10 @@ func TestConnectWithContext_Basic(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	ctx := context.Background()
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
@@ -39,14 +41,10 @@ func TestConnectWithContext_Basic(t *testing.T) {
 
 // TestConnectWithContext_Cancelled 测试已取消的 Context
 func TestConnectWithContext_Cancelled(t *testing.T) {
-	if testing.Short() {
-		t.Skip("跳过需要服务器的集成测试")
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	cli, err := ConnectWithContext(ctx, "127.0.0.1:1", testAES256Key())
 
 	if err == nil {
 		if cli != nil {
@@ -70,7 +68,8 @@ func TestSubscribeWithContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	s, key := startTestServer(t)
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -135,7 +134,8 @@ func TestPublishWithContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	s, key := startTestServer(t)
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -167,8 +167,10 @@ func TestBackwardCompatibility(t *testing.T) {
 		t.Skip("跳过需要服务器的集成测试")
 	}
 
+	s, key := startTestServer(t)
+
 	// 测试旧 API（不带 context）
-	cli, err := Connect("localhost:4000")
+	cli, err := Connect(s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}
@@ -237,7 +239,8 @@ func TestClientClose_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cli, err := ConnectWithContext(ctx, "localhost:4000")
+	s, key := startTestServer(t)
+	cli, err := ConnectWithContext(ctx, s.Addr().String(), key)
 	if err != nil {
 		t.Fatalf("连接失败: %v", err)
 	}

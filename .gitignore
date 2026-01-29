@@ -35,3 +35,8 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.log
+kcpq-server-linux
+kcpq-server-new
+*.exe
+*.log
+nul

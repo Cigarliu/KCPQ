@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -213,6 +214,17 @@ func runPerformanceTest(name string, config TestScenario) {
 	if addr == "" {
 		addr = "localhost:4000"
 	}
+	keyHex := os.Getenv("KCPQ_AES256_KEY_HEX")
+	if keyHex == "" {
+		log.Fatal("KCPQ_AES256_KEY_HEX is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		log.Fatalf("invalid KCPQ_AES256_KEY_HEX: %v", err)
+	}
+	if len(key) != 32 {
+		log.Fatalf("KCPQ_AES256_KEY_HEX must decode to 32 bytes, got %d", len(key))
+	}
 
 	// 用于通知订阅者测试结束
 	done := make(chan struct{})
@@ -227,7 +239,7 @@ func runPerformanceTest(name string, config TestScenario) {
 			defer wg.Done()
 
 			// 每个订阅者独立的KCP连接
-			cli, err := client.Connect(addr)
+			cli, err := client.Connect(addr, key)
 			if err != nil {
 				log.Printf("[Subscriber %d] Failed to connect: %v", subID, err)
 				return
@@ -276,7 +288,7 @@ func runPerformanceTest(name string, config TestScenario) {
 	}()
 
 	// 为发布者创建独立的连接
-	publisherCli, err := client.Connect(addr)
+	publisherCli, err := client.Connect(addr, key)
 	if err != nil {
 		log.Fatalf("Failed to connect publisher: %v", err)
 	}

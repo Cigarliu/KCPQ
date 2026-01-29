@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -17,13 +20,15 @@ import (
 
 // RelayConfig 配置
 type RelayConfig struct {
-	UDPListenAddr    string        // UDP 监听地址
-	KCPServerAddr    string        // KCPQ 服务器地址
-	Subject          string        // 发布主题
-	ReconnectDelay   time.Duration // 重连延迟（废弃，v2.0 使用自动重连）
-	StatsInterval    time.Duration // 统计打印间隔
-	BufferSize       int           // UDP 接收缓冲区大小
-	AutoReconnect    bool          // 是否启用自动重连
+	UDPListenAddr     string        // UDP 监听地址
+	KCPServerAddr     string        // KCPQ 服务器地址
+	Subject           string        // 发布主题
+	AES256KeyHex      string        // AES-256 PSK（hex）
+	AES256Key         []byte        // AES-256 PSK（32 bytes）
+	ReconnectDelay    time.Duration // 重连延迟（废弃，v2.0 使用自动重连）
+	StatsInterval     time.Duration // 统计打印间隔
+	BufferSize        int           // UDP 接收缓冲区大小
+	AutoReconnect     bool          // 是否启用自动重连
 	ReconnectInterval time.Duration // 自动重连间隔
 }
 
@@ -38,12 +43,15 @@ type RelayStats struct {
 
 // H264Relay H.264 转发器
 type H264Relay struct {
-	config      *RelayConfig
-	stats       *RelayStats
-	kcpClient   *client.Client
-	ctx         context.Context
-	cancel      context.CancelFunc
-	initialized atomic.Bool
+	config       *RelayConfig
+	stats        *RelayStats
+	kcpClient    *client.Client
+	ctx          context.Context
+	cancel       context.CancelFunc
+	initialized  atomic.Bool
+	recentErrors []string
+	errorMu      sync.RWMutex
+	maxErrors    int
 }
 
 // NewH264Relay 创建 H.264 转发器
@@ -70,7 +78,8 @@ func (r *H264Relay) Start() error {
 	log.Printf("KCPQ Server: %s", r.config.KCPServerAddr)
 	log.Printf("Subject: %s", r.config.Subject)
 	log.Printf("Auto Reconnect: %v", r.config.AutoReconnect)
-	log.Println("===========================================\n")
+	log.Println("===========================================")
+	log.Println()
 
 	// 连接到 KCPQ 服务器（使用 v2.0 API）
 	if err := r.connectToKCPQ(); err != nil {
@@ -91,7 +100,10 @@ func (r *H264Relay) connectToKCPQ() error {
 	log.Printf("[INFO] Connecting to KCPQ server: %s", r.config.KCPServerAddr)
 
 	// 使用 ConnectWithContext 支持 context
-	cli, err := client.ConnectWithContext(r.ctx, r.config.KCPServerAddr)
+	if len(r.config.AES256Key) != 32 {
+		return fmt.Errorf("AES-256 key must be 32 bytes, got %d", len(r.config.AES256Key))
+	}
+	cli, err := client.ConnectWithContext(r.ctx, r.config.KCPServerAddr, r.config.AES256Key)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
@@ -237,7 +249,7 @@ func (r *H264Relay) printStats() {
 	// 计算速率
 	frameRate := float64(totalFrames) / elapsed
 	byteRate := float64(totalBytes) / elapsed
-	mbps := byteRate * 8 / 1000000 // Mbps
+	mbps := byteRate * 8 / 1000000                                    // Mbps
 	avgFrameSize := float64(totalBytes) / float64(totalFrames) / 1024 // KB
 
 	log.Println("===========================================")
@@ -272,7 +284,8 @@ func (r *H264Relay) printStats() {
 		log.Printf("  Publish Errors: %d", stats.PublishErrors)
 	}
 
-	log.Println("===========================================\n")
+	log.Println("===========================================")
+	log.Println()
 }
 
 // Stop 停止转发器
@@ -290,16 +303,34 @@ func (r *H264Relay) Stop() {
 }
 
 func main() {
+	configPath := flag.String("config", "", "")
+	flag.Parse()
+
 	// 配置
 	config := &RelayConfig{
 		UDPListenAddr:     ":22345",              // 本地 UDP 监听地址
-		KCPServerAddr:     "localhost:4000", // KCPQ 服务器地址（可通过环境变量 KCPQ_SERVER 覆盖）
+		KCPServerAddr:     "208.81.129.186:4000", // KCPQ 服务器地址（可通过环境变量 KCPQ_SERVER 覆盖）
 		Subject:           "h264.stream",         // 发布主题
+		AES256KeyHex:      "",                    // 可通过配置文件或环境变量 KCPQ_AES256_KEY_HEX 设置
 		ReconnectDelay:    3 * time.Second,       // 重连延迟（废弃）
 		StatsInterval:     10 * time.Second,      // 每 10 秒打印统计
 		BufferSize:        10 * 1024 * 1024,      // 10MB 接收缓冲区
 		AutoReconnect:     true,                  // v2.0: 启用自动重连
 		ReconnectInterval: 5 * time.Second,       // v2.0: 自动重连间隔
+	}
+
+	cfgPath := *configPath
+	if cfgPath == "" {
+		if _, err := os.Stat("config.yaml"); err == nil {
+			cfgPath = "config.yaml"
+		}
+	}
+	if cfgPath != "" {
+		cfgFile, err := LoadConfig(cfgPath)
+		if err != nil {
+			log.Fatalf("[FATAL] Failed to load config: %v", err)
+		}
+		config = cfgFile.ToRelayConfig()
 	}
 
 	// 可以通过环境变量覆盖
@@ -312,6 +343,20 @@ func main() {
 	if udpAddr := os.Getenv("UDP_LISTEN"); udpAddr != "" {
 		config.UDPListenAddr = udpAddr
 	}
+	if keyHex := os.Getenv("KCPQ_AES256_KEY_HEX"); keyHex != "" {
+		config.AES256KeyHex = keyHex
+	}
+	if config.AES256KeyHex == "" {
+		log.Fatal("[FATAL] KCPQ_AES256_KEY_HEX (or config aes256_key_hex) is required (64 hex chars)")
+	}
+	key, err := hex.DecodeString(config.AES256KeyHex)
+	if err != nil {
+		log.Fatalf("[FATAL] invalid aes256_key_hex: %v", err)
+	}
+	if len(key) != 32 {
+		log.Fatalf("[FATAL] aes256_key_hex must decode to 32 bytes, got %d", len(key))
+	}
+	config.AES256Key = key
 
 	// 创建转发器
 	relay := NewH264Relay(config)
